@@ -66,3 +66,16 @@ describe('evaluateBest5', () => {
     expect(compareRanks(a, b)).toBe(0);
   });
 });
+
+describe('review fixes', () => {
+  it('two trips makes full house (kings over queens)', async () => {
+    const { evaluateBest5: ev } = await import('../src/evaluator.js');
+    const { C: _mk } = { C: null as never };
+    void _mk;
+    const K = (s: number) => ({ rank: 13, suit: s });
+    const Q = (s: number) => ({ rank: 12, suit: s });
+    const r = ev([K(0), K(1), K(2), Q(0), Q(1), Q(3), { rank: 2, suit: 0 }]);
+    expect(r.category).toBe(6);
+    expect(r.kickers).toEqual([13, 12]);
+  });
+});

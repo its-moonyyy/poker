@@ -20,7 +20,7 @@ export class LobbyScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     btn.on('pointerdown', async () => {
       const room = await joinTable('poker-table', 10000);
-      this.scene.start('table', { roomId: room.id });
+      this.scene.start('table', { room });
     });
   }
 }

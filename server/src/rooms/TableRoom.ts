@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { Room } from 'colyseus';
 import { Table } from '../../../shared/poker-engine/src/table.js';
+import { buildSidePots } from '../../../shared/poker-engine/src/pots.js';
 import { Deck } from '../../../shared/poker-engine/src/deck.js';
-import { SeededRNG } from '../../../shared/poker-engine/src/rng.js';
+import { SeededRNG, CryptoRNG, type RNG } from '../../../shared/poker-engine/src/rng.js';
 import type { Card } from '../../../shared/poker-engine/src/cards.js';
 import type { Wallet } from '../wallet.js';
 import { InMemoryWallet } from '../wallet.js';
@@ -20,6 +21,7 @@ export interface ControllerOpts {
   buyIn?: number;
   turnMs?: number;
   reconnectMs?: number;
+  seed?: number;
 }
 
 interface Seat {
@@ -46,6 +48,8 @@ export class PokerTableController {
   private wallet: Wallet;
   private throttle = new Map<number, number[]>();
   private tx = 0;
+  private rng: RNG;
+  readonly rngKind: string;
 
   constructor(wallet: Wallet, opts: ControllerOpts = {}) {
     this.wallet = wallet;
@@ -53,6 +57,8 @@ export class PokerTableController {
     this.buyIn = opts.buyIn ?? 10000;
     this.turnMs = opts.turnMs ?? 15000;
     this.reconnectMs = opts.reconnectMs ?? 60000;
+    if (opts.seed !== undefined) { this.rng = new SeededRNG(opts.seed); this.rngKind = 'seeded'; }
+    else { this.rng = new CryptoRNG(); this.rngKind = 'crypto'; }
     for (let i = 0; i < 6; i++) {
       this.state.seats.push({ userId: null, connected: false, disconnectedAt: null });
       this.state.stacks.push(0);
@@ -78,7 +84,7 @@ export class PokerTableController {
       if (this.state.seats[i].userId === null) this.table.folded[i] = true;
     }
     this.table.postBlinds();
-    this.deck = new Deck(new SeededRNG(7));
+    this.deck = new Deck(this.rng);
     this.deck.shuffle();
     // Burn + deal 2 each to seated.
     this.holes.clear();
@@ -102,14 +108,29 @@ export class PokerTableController {
     return arr.length <= 20;
   }
 
+  joinOrReconnect(userId: string, buyIn?: number): { seat: number; reconnected: boolean } {
+    const existing = this.state.seats.findIndex(s => s.userId === userId);
+    if (existing !== -1) {
+      const s = this.state.seats[existing];
+      if (!s.connected && (s.disconnectedAt === null || Date.now() - s.disconnectedAt <= this.reconnectMs)) {
+        s.connected = true;
+        s.disconnectedAt = null;
+        return { seat: existing, reconnected: true };
+      }
+      throw new Error('ALREADY_SEATED');
+    }
+    return { seat: this.join(userId, buyIn), reconnected: false };
+  }
+
   send(seat: number, raw: unknown): { ok: true } | { ok: false; code: string } {
     if (!this.checkThrottle(seat)) return { ok: false, code: 'THROTTLED' };
     const parsed = MsgSchema.safeParse(raw);
     if (!parsed.success) return { ok: false, code: 'BAD_AMOUNT' };
     if (!this.table || this.state.over) return { ok: false, code: 'HAND_OVER' };
+    const msg = parsed.data as { t: string; to?: number };
+    if (this.table.stacks[seat] <= 0 && msg.t !== 'fold') return { ok: false, code: 'INSUFFICIENT' };
     if (seat !== this.table.actingSeat) return { ok: false, code: 'NOT_YOUR_TURN' };
     try {
-      const msg = parsed.data as { t: string; to?: number };
       if (msg.t === 'fold') this.table.act(seat, { t: 'fold' });
       else if (msg.t === 'call') this.table.act(seat, { t: 'call' });
       else this.table.act(seat, { t: 'raiseTo', to: msg.to! });
@@ -144,8 +165,16 @@ export class PokerTableController {
 
   private potAmounts(): number[] {
     if (!this.table) return [0];
-    const total = this.table.committedHand.reduce((s, x) => s + x, 0);
-    return [total];
+    const contribs = this.table.committedHand
+      .map((amount, seat) => ({ seat, amount }))
+      .filter(c => c.amount > 0);
+    if (contribs.length === 0) return [0];
+    return buildSidePots(contribs).map(p => p.amount);
+  }
+
+  /** Wire payload for one session: filtered state + that seat's private hole. */
+  messageFor(seat: number): { state: PublicSnapshot; hole: Card[] } {
+    return { state: this.publicSnapshot(seat), hole: this.privateHole(seat) };
   }
 
   privateHole(seat: number): Card[] {
@@ -187,6 +216,11 @@ export class PokerTableController {
   }
 
   expireDeadlineForTest(): void {
+    this.expireTurn();
+  }
+
+  /** Auto-check if free else auto-fold the acting seat (turn timer expiry). */
+  expireTurn(): void {
     if (!this.table || this.state.over) return;
     const s = this.table.actingSeat;
     if (s === null || s === undefined) return;
@@ -244,23 +278,36 @@ export class TableRoom extends Room {
     });
   }
   async onJoin(client: { sessionId: string }, opts: { userId?: string; buyIn?: number } = {}) {
-    const seat = this.ctrl.join(opts.userId ?? client.sessionId, opts.buyIn);
+    const userId = opts.userId ?? client.sessionId;
+    const { seat, reconnected } = this.ctrl.joinOrReconnect(userId, opts.buyIn);
     this.sessions.set(client.sessionId, seat);
+    client.send('seat', { seat, reconnected });
+    const hole = this.ctrl.privateHole(seat);
+    if (hole.length > 0) client.send('hole', hole);
     if (this.ctrl.seatCount() === 2) this.ctrl.startHand();
     this.broadcastState();
   }
   async onLeave(client: { sessionId: string }) {
     const seat = this.sessions.get(client.sessionId);
     if (seat === undefined) return;
+    const wasActing = this.ctrl.state.actingSeat === seat;
     this.ctrl.disconnect(seat);
+    if (wasActing) {
+      // Turn timer: auto-check/fold the disconnected seat when its clock runs out.
+      this.clock.setTimeout(() => {
+        this.ctrl.expireTurn();
+        this.broadcastState();
+      }, 15000);
+    }
     this.broadcastState();
   }
   private broadcastState() {
     for (const [sessionId, seat] of this.sessions) {
-      const snap = this.ctrl.publicSnapshot(seat);
-      this.clients.forEach(() => {});
-      void sessionId;
-      void snap;
+      const client = this.clients.find((c: { sessionId: string }) => c.sessionId === sessionId);
+      if (!client) continue;
+      const msg = this.ctrl.messageFor(seat);
+      client.send('state', msg.state);
+      client.send('hole', msg.hole);
     }
   }
 }

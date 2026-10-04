@@ -63,3 +63,26 @@ describe('Table betting', () => {
     expect(totalOut).toBe(totalIn);
   });
 });
+
+
+describe('review fixes', () => {
+  it('odd chip goes left of button, not button', async () => {
+    const { Table: T } = await import('../src/table.js');
+    const C = (rank: number, suit: number) => ({ rank, suit });
+    const t = new T(3, 2, 100, 200, [1000, 10000, 10000]);
+    t.postBlinds();
+    // seat1 folds holding the extra chip; seats 0 and 2 tie. Pot 301, odd.
+    t.forceCommit([100, 101, 100]);
+    t.setHole(0, [C(14, 0), C(13, 0)]);
+    t.setHole(2, [C(14, 1), C(13, 1)]);
+    t.setHole(1, [C(2, 0), C(3, 1)]);
+    t.folded[1] = true;
+    t.setCommunity([C(14, 2), C(13, 2), C(9, 0), C(5, 1), C(2, 1)]);
+    const res = t.showdown();
+    const totalOut = [...res.payouts.values()].reduce((s, x) => s + x, 0);
+    expect(totalOut).toBe(301);
+    // button=2, winners 0 and 2 tie → extra chip to seat 0 (first left of button)
+    expect(res.payouts.get(0)).toBe(151);
+    expect(res.payouts.get(2)).toBe(150);
+  });
+});

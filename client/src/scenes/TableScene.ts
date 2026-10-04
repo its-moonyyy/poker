@@ -22,11 +22,25 @@ export class TableScene extends Phaser.Scene {
   private room: Room | null = null;
   private state: TableState | null = null;
   private mySeat = 0;
+  private myHole: { rank: number; suit: number }[] = [];
   private statusText!: Phaser.GameObjects.Text;
   private connDot!: Phaser.GameObjects.Arc;
   private raiseValue = 400;
 
   constructor() { super('table'); }
+
+  init(data: { room?: Room }) {
+    if (data?.room) {
+      this.room = data.room;
+      this.room.onMessage('seat', (m: { seat: number }) => { this.mySeat = m.seat; });
+      this.room.onMessage('state', (s: TableState) => this.render(s));
+      this.room.onMessage('hole', (h: { rank: number; suit: number }[]) => { this.myHole = h; });
+      this.room.onMessage('reject', (r: { code: string }) => {
+        this.statusText?.setText(`Rejected: ${r.code}`);
+      });
+      this.room.onLeave(() => this.connDot?.setFillStyle(0xff0000));
+    }
+  }
 
   create() {
     this.statusText = this.add.text(20, 16, 'Connecting…', { fontSize: '18px' });

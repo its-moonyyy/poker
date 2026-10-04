@@ -189,7 +189,7 @@ export class Table {
     }
     const payouts = new Map<number, number>();
     const orderFromButton = (seats: number[]) =>
-      [...seats].sort((a, b) => ((a - this.button + this.numSeats) % this.numSeats) - ((b - this.button + this.numSeats) % this.numSeats));
+      [...seats].sort((a, b) => ((a - this.button - 1 + this.numSeats) % this.numSeats) - ((b - this.button - 1 + this.numSeats) % this.numSeats));
 
     for (const pot of pots) {
       const eligible = pot.eligible.filter(s => !this.folded[s]);
