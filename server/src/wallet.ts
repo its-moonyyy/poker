@@ -23,3 +23,18 @@ export class InMemoryWallet implements Wallet {
     return this.balances.get(userId) ?? 0;
   }
 }
+
+// Play-money wallet v1. Postgres-backed in prod (service-role, server only);
+// in-memory here so tests run without creds. Real-money swap: implement
+// Wallet + audit log + KYC-gated credit behind the same interface.
+export class SupabasePlayWallet extends InMemoryWallet {
+  static readonly STARTING = 10000;
+  static readonly REBUY_BELOW = 2000;
+  async refill(userId: string): Promise<number> {
+    const bal = await this.getBalance(userId);
+    if (bal < SupabasePlayWallet.REBUY_BELOW) {
+      await this.credit(userId, SupabasePlayWallet.STARTING - bal, `refill-${userId}-${Date.now()}`);
+    }
+    return this.getBalance(userId);
+  }
+}
