@@ -219,6 +219,10 @@ export class PokerTableController {
     this.state.actingSeat = seat;
   }
 
+  seatCount(): number {
+    return this.state.seats.filter(s => s.userId !== null).length;
+  }
+
   maxToForTest(seat: number): number {
     if (!this.table) return 0;
     return this.table.committedStreet[seat] + this.table.stacks[seat];
@@ -227,8 +231,36 @@ export class PokerTableController {
 
 export class TableRoom extends Room {
   ctrl!: PokerTableController;
+  private sessions = new Map<string, number>();
   onCreate(opts: { buyIn?: number } = {}) {
     this.ctrl = new PokerTableController(new InMemoryWallet(), { buyIn: opts.buyIn ?? 10000 });
     this.setState({ tables: 1 });
+    this.onMessage('action', (client, msg) => {
+      const seat = this.sessions.get(client.sessionId);
+      if (seat === undefined) return;
+      const res = this.ctrl.send(seat, msg);
+      if (!res.ok) client.send('reject', res);
+      else this.broadcastState();
+    });
+  }
+  async onJoin(client: { sessionId: string }, opts: { userId?: string; buyIn?: number } = {}) {
+    const seat = this.ctrl.join(opts.userId ?? client.sessionId, opts.buyIn);
+    this.sessions.set(client.sessionId, seat);
+    if (this.ctrl.seatCount() === 2) this.ctrl.startHand();
+    this.broadcastState();
+  }
+  async onLeave(client: { sessionId: string }) {
+    const seat = this.sessions.get(client.sessionId);
+    if (seat === undefined) return;
+    this.ctrl.disconnect(seat);
+    this.broadcastState();
+  }
+  private broadcastState() {
+    for (const [sessionId, seat] of this.sessions) {
+      const snap = this.ctrl.publicSnapshot(seat);
+      this.clients.forEach(() => {});
+      void sessionId;
+      void snap;
+    }
   }
 }
