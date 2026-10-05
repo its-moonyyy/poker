@@ -1,0 +1,9 @@
+{
+  "name": "poker-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": ["client", "server", "shared/poker-engine"],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present"
+  }
+}
